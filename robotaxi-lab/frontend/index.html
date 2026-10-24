@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robotaxi dispatch lab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2318212c'/%3E%3Cpath d='M0 11h32M0 21h32M11 0v32M21 0v32' stroke='%23fafbfb' stroke-width='3'/%3E%3Crect x='17' y='17' width='8' height='8' rx='2' fill='%23eb6834'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/app.css">
+  <script src="vendor/chart.umd.min.js"></script>
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="7" class="bm-bg"/>
+        <path d="M0 11h32M0 21h32M11 0v32M21 0v32" class="bm-road"/>
+        <rect x="17" y="17" width="8" height="8" rx="2" class="bm-car"/>
+      </svg>
+      <div>
+        <h1>Robotaxi dispatch lab</h1>
+        <p class="tagline">Compare dispatch heuristics against the optimal schedule for the longest passenger wait</p>
+      </div>
+    </div>
+    <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch between light and dark theme" title="Switch theme">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+    </button>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" aria-label="Setup">
+      <section class="panel" id="instance-panel">
+        <h2>Day</h2>
+        <form id="instance-form" class="field-grid">
+          <label>Trips <input type="number" name="n" min="1" max="300" value="10" required></label>
+          <label>Cars <input type="number" name="cars" min="1" max="50" value="3" required></label>
+          <label>Grid size <input type="number" name="width" min="2" max="40" value="10" required></label>
+          <label title="Request times are drawn uniformly from 0 to this many minutes. Smaller means busier.">Requests within (min) <input type="number" name="horizon" min="0" max="5000" value="30" required></label>
+          <label class="span-2">Seed <input type="number" name="seed" placeholder="Random"></label>
+          <button type="submit" class="btn span-2">Generate random day</button>
+        </form>
+        <p class="instance-summary" id="instance-summary">No day loaded yet.</p>
+        <div class="link-row">
+          <button type="button" class="text-btn" id="import-json">Import JSON</button>
+          <button type="button" class="text-btn" id="export-json">Export JSON</button>
+          <button type="button" class="text-btn" id="show-trips">Show trips</button>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
+        </div>
+        <div id="trip-table-wrap" class="trip-table-wrap" hidden></div>
+      </section>
+
+      <section class="panel" id="heuristic-panel">
+        <div class="panel-head">
+          <h2>Heuristics</h2>
+          <div class="add-menu">
+            <button type="button" class="text-btn" id="add-heuristic" aria-haspopup="true" aria-expanded="false">Add heuristic</button>
+            <div class="menu" id="add-menu" hidden></div>
+          </div>
+        </div>
+        <ul class="heuristic-list" id="heuristic-list"></ul>
+        <details class="reference">
+          <summary>Formula reference</summary>
+          <div id="formula-reference"></div>
+        </details>
+      </section>
+
+      <section class="panel">
+        <h2>Optimal schedule</h2>
+        <label class="check"><input type="checkbox" id="exact-enabled" checked> Compute the true optimum</label>
+        <label class="inline">Solver time limit (s) <input type="number" id="exact-limit" min="1" max="600" value="20"></label>
+        <p class="hint" id="solver-note"></p>
+      </section>
+
+      <div class="run-bar">
+        <button type="button" class="btn primary" id="run-day">Dispatch this day</button>
+        <p class="status" id="run-status" role="status" aria-live="polite"></p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button role="tab" id="tab-replay" aria-controls="view-replay" aria-selected="true">Replay</button>
+        <button role="tab" id="tab-compare" aria-controls="view-compare" aria-selected="false">Compare</button>
+        <button role="tab" id="tab-experiments" aria-controls="view-experiments" aria-selected="false">Experiments</button>
+        <button role="tab" id="tab-counter" aria-controls="view-counter" aria-selected="false">Counterexamples</button>
+      </nav>
+
+      <!-- Replay -->
+      <section class="view" id="view-replay" role="tabpanel" aria-labelledby="tab-replay">
+        <div class="empty" id="replay-empty">
+          <p>Generate a day and press <strong>Dispatch this day</strong> to watch each heuristic's cars side by side.</p>
+        </div>
+        <div class="replay" id="replay" hidden>
+          <div class="player" role="group" aria-label="Playback">
+            <div class="player-buttons">
+              <button class="icon-btn" id="pl-start" type="button" aria-label="Go to start" title="Start (Home)"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14l-10-7z"/></svg></button>
+              <button class="icon-btn" id="pl-back" type="button" aria-label="Back one minute" title="Back one minute (Left arrow)"><svg viewBox="0 0 24 24"><path d="M18 5v14l-10-7zM6 5h2v14H6z" transform="translate(-1 0)"/></svg></button>
+              <button class="icon-btn play" id="pl-play" type="button" aria-label="Play" title="Play or pause (Space)"><svg viewBox="0 0 24 24" class="i-play"><path d="M7 4v16l13-8z"/></svg><svg viewBox="0 0 24 24" class="i-pause"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg></button>
+              <button class="icon-btn" id="pl-fwd" type="button" aria-label="Forward one minute" title="Forward one minute (Right arrow)"><svg viewBox="0 0 24 24"><path d="M6 5v14l10-7zM16 5h2v14h-2z" transform="translate(1 0)"/></svg></button>
+              <button class="icon-btn" id="pl-end" type="button" aria-label="Go to end" title="End (End)"><svg viewBox="0 0 24 24"><path d="M4 5v14l10-7zM16 5h2v14h-2z"/></svg></button>
+            </div>
+            <div class="clock"><span class="clock-now" id="pl-time">0</span><span class="clock-of" id="pl-total">of 0 min</span></div>
+            <input type="range" id="pl-scrub" min="0" max="0" step="1" value="0" aria-label="Minute">
+            <label class="inline small">Speed
+              <select id="pl-speed">
+                <option value="1">1 min/s</option>
+                <option value="2" selected>2 min/s</option>
+                <option value="4">4 min/s</option>
+                <option value="8">8 min/s</option>
+              </select>
+            </label>
+            <div class="segmented" role="radiogroup" aria-label="Map layout">
+              <button type="button" role="radio" aria-checked="true" data-layout="split">Side by side</button>
+              <button type="button" role="radio" aria-checked="false" data-layout="overlay">Overlay</button>
+            </div>
+            <label class="check small"><input type="checkbox" id="pl-routes" checked> Planned legs</label>
+          </div>
+          <div class="replay-body">
+            <div class="timeline" id="timeline" aria-label="Trip requests over the day"></div>
+            <div class="maps" id="maps"></div>
+          </div>
+          <details class="trip-status" open>
+            <summary>Trip status at this minute</summary>
+            <div id="trip-status-table"></div>
+          </details>
+        </div>
+      </section>
+
+      <!-- Compare -->
+      <section class="view" id="view-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+        <div class="empty" id="compare-empty">
+          <p>Press <strong>Dispatch this day</strong> to compare every enabled heuristic with the optimal schedule.</p>
+        </div>
+        <div id="compare" hidden>
+          <div class="facts" id="compare-facts"></div>
+          <div class="table-wrap"><table class="data" id="compare-table"></table></div>
+          <figure class="chart-block">
+            <figcaption>Wait for each trip, ordered by request time</figcaption>
+            <div class="chart-box"><canvas id="chart-waits" aria-label="Wait for each trip by algorithm"></canvas></div>
+          </figure>
+          <div class="link-row">
+            <button type="button" class="text-btn" id="compare-csv">Download results (CSV)</button>
+            <button type="button" class="text-btn" id="compare-png">Download chart (PNG)</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Experiments -->
+      <section class="view" id="view-experiments" role="tabpanel" aria-labelledby="tab-experiments" hidden>
+        <div class="segmented wide" role="radiogroup" aria-label="Experiment type">
+          <button type="button" role="radio" aria-checked="true" data-mode="batch">Many random days</button>
+          <button type="button" role="radio" aria-checked="false" data-mode="sweep">Sweep a parameter</button>
+        </div>
+        <form id="exp-form" class="exp-form">
+          <label>Trips <input type="number" name="n" min="1" max="300" value="8"></label>
+          <label>Cars <input type="number" name="cars" min="1" max="50" value="2"></label>
+          <label>Grid size <input type="number" name="width" min="2" max="40" value="10"></label>
+          <label>Requests within (min) <input type="number" name="horizon" min="0" max="5000" value="40"></label>
+          <label><span data-batch>Days</span><span data-sweep hidden>Days per value</span> <input type="number" name="instances" min="1" max="2000" value="50"></label>
+          <label>Seed <input type="number" name="seed" value="3821"></label>
+          <label>Compare against
+            <select name="reference">
+              <option value="optimal">True optimum</option>
+              <option value="best_heuristic">Best heuristic</option>
+            </select>
+          </label>
+          <label data-sweep hidden>Vary
+            <select name="variable">
+              <option value="n">Trips</option>
+              <option value="cars">Cars</option>
+              <option value="horizon">Requests within</option>
+              <option value="width">Grid size</option>
+            </select>
+          </label>
+          <label data-sweep hidden class="span-2">Values <input type="text" name="values" value="4, 6, 8, 10, 12, 14"></label>
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Run experiment</button>
+            <button type="button" class="btn" id="exp-cancel" hidden>Cancel</button>
+          </div>
+        </form>
+        <p class="hint">Uses the enabled heuristics and the solver time limit from the sidebar. Days where the solver hits the limit are compared with the best schedule it found.</p>
+        <div class="progress" id="exp-progress" hidden><div class="bar"><span></span></div><p></p></div>
+        <div id="exp-results"></div>
+      </section>
+
+      <!-- Counterexamples -->
+      <section class="view" id="view-counter" role="tabpanel" aria-labelledby="tab-counter" hidden>
+        <p class="lede">Search small days for one where a heuristic does as badly as possible. Useful for testing a claimed approximation bound before trying to prove it.</p>
+        <form id="ce-form" class="exp-form">
+          <label>Heuristic to test <select name="target" id="ce-target"></select></label>
+          <label>Compare against <select name="opponent" id="ce-opponent"></select></label>
+          <label>Trips <input type="number" name="n" min="2" max="7" value="5"></label>
+          <label>Cars <input type="number" name="cars" min="1" max="6" value="2"></label>
+          <label>Grid size <input type="number" name="width" min="2" max="40" value="10"></label>
+          <label>Requests within (min) <input type="number" name="horizon" min="0" max="500" value="20"></label>
+          <label>Search steps <input type="number" name="iterations" min="10" max="20000" value="1500"></label>
+          <label>Maximise
+            <select name="objective">
+              <option value="ratio">Ratio of longest waits</option>
+              <option value="gap">Difference in longest wait</option>
+            </select>
+          </label>
+          <label>Seed <input type="number" name="seed" value="1"></label>
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Search</button>
+            <button type="button" class="btn" id="ce-cancel" hidden>Stop</button>
+          </div>
+        </form>
+        <div class="progress" id="ce-progress" hidden><div class="bar"><span></span></div><p></p></div>
+        <div id="ce-results"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="alert" hidden></div>
+</body>
+</html>
