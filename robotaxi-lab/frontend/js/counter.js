@@ -1,7 +1,7 @@
 // Counterexample search: hill-climb small days to make one heuristic look as bad as possible.
 import { api, waitForJob } from "./api.js";
 import { setProgress } from "./experiments.js";
-import { emit, heuristicPayload, on, state } from "./state.js";
+import { emit, heuristicPayload, objLabel, on, state } from "./state.js";
 import { el, fmt, formData, intOr, seriesColor, store, toast } from "./util.js";
 
 let jobId = null;
@@ -11,9 +11,17 @@ export function initCounter() {
   const saved = store.get("ce-form", null);
   if (saved) for (const [k, v] of Object.entries(saved)) if (form.elements[k] && k !== "target" && k !== "opponent") form.elements[k].value = v;
   fillSelects();
+  labelOptions();
   on("heuristics-changed", fillSelects);
+  on("mode-changed", () => { labelOptions(); document.getElementById("ce-results").replaceChildren(); });
   form.addEventListener("submit", (e) => { e.preventDefault(); run(); });
   document.getElementById("ce-cancel").addEventListener("click", () => jobId && api.cancel(jobId));
+}
+
+function labelOptions() {
+  const plural = state.mode === "base" ? "longest waits" : "longest completion times";
+  document.getElementById("ce-opt-ratio").textContent = `Ratio of ${plural}`;
+  document.getElementById("ce-opt-gap").textContent = `Difference in ${objLabel()}`;
 }
 
 function fillSelects() {
@@ -41,6 +49,7 @@ async function run() {
   const opponent = f.opponent ? state.heuristics.find((h) => h.uid === f.opponent) : null;
   if (opponent && opponent.uid === target.uid) return toast("Pick two different heuristics, or compare against the true optimum.", "error");
   const config = {
+    mode: state.mode === "simplified" ? "simplified" : "base",
     n: intOr(f.n, 5), cars: intOr(f.cars, 2), width: intOr(f.width, 10), horizon: intOr(f.horizon, 20),
     iterations: intOr(f.iterations, 1500), seed: intOr(f.seed, 1), objective: f.objective,
   };
@@ -73,7 +82,8 @@ function render(res, target, opponent) {
   const headline = res.objective === "gap"
     ? `${res.heuristic_value - res.reference_value} min longer`
     : ratio === null ? (res.heuristic_value > 0 ? "unboundedly worse" : "1.00×") : `${ratio.toFixed(2)}×`;
-  const lead = res.objective === "gap" ? `${target.name}'s longest wait is ` : `${target.name}'s longest wait is `;
+  const label = res.objective_label || "longest wait";
+  const lead = `${target.name}'s ${label} is `;
   const tail = res.objective === "gap" ? ` than ${refName}'s on this day: ` : ` ${refName === "the optimum" ? "the optimum's" : `${refName}'s`} on this day: `;
   const inst = res.instance;
   const rows = inst.trips.map((t, i) => el("tr", {},

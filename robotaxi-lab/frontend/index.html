@@ -19,8 +19,13 @@
       </svg>
       <div>
         <h1>Robotaxi dispatch lab</h1>
-        <p class="tagline">Compare dispatch heuristics against the optimal schedule for the longest passenger wait</p>
+        <p class="tagline" id="tagline">Compare dispatch heuristics against the optimal schedule for the longest passenger wait</p>
       </div>
+    </div>
+    <div class="segmented problem-switch" role="radiogroup" aria-label="Problem">
+      <button type="button" role="radio" aria-checked="true" data-problem="base" title="Cars go straight from one trip to the next. Minimise the longest wait.">Base problem</button>
+      <button type="button" role="radio" aria-checked="false" data-problem="simplified" title="Cars return to the depot after every trip. Minimise the longest completion time.">Simplified</button>
+      <button type="button" role="radio" aria-checked="false" data-problem="online" title="Simplified model with trips arriving over the day.">Online</button>
     </div>
     <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch between light and dark theme" title="Switch theme">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
@@ -35,7 +40,8 @@
           <label>Trips <input type="number" name="n" min="1" max="300" value="10" required></label>
           <label>Cars <input type="number" name="cars" min="1" max="50" value="3" required></label>
           <label>Grid size <input type="number" name="width" min="2" max="40" value="10" required></label>
-          <label title="Request times are drawn uniformly from 0 to this many minutes. Smaller means busier.">Requests within (min) <input type="number" name="horizon" min="0" max="5000" value="30" required></label>
+          <label data-modes="base simplified" title="Request times are drawn uniformly from 0 to this many minutes. Smaller means busier.">Requests within (min) <input type="number" name="horizon" min="0" max="5000" value="30"></label>
+          <label data-modes="online" title="Share of the fleet's capacity that the requests demand. Above 100% the fleet can't keep up and queues grow.">Load (%) <input type="number" name="load" min="10" max="300" step="1" value="85"></label>
           <label class="span-2">Seed <input type="number" name="seed" placeholder="Random"></label>
           <button type="submit" class="btn span-2">Generate random day</button>
         </form>
@@ -66,8 +72,8 @@
 
       <section class="panel">
         <h2>Optimal schedule</h2>
-        <label class="check"><input type="checkbox" id="exact-enabled" checked> Compute the true optimum</label>
-        <label class="inline">Solver time limit (s) <input type="number" id="exact-limit" min="1" max="600" value="20"></label>
+        <label class="check"><input type="checkbox" id="exact-enabled" checked> <span id="exact-label">Compute the true optimum</span></label>
+        <label class="inline" data-modes="base">Solver time limit (s) <input type="number" id="exact-limit" min="1" max="600" value="20"></label>
         <p class="hint" id="solver-note"></p>
       </section>
 
@@ -82,7 +88,7 @@
         <button role="tab" id="tab-replay" aria-controls="view-replay" aria-selected="true">Replay</button>
         <button role="tab" id="tab-compare" aria-controls="view-compare" aria-selected="false">Compare</button>
         <button role="tab" id="tab-experiments" aria-controls="view-experiments" aria-selected="false">Experiments</button>
-        <button role="tab" id="tab-counter" aria-controls="view-counter" aria-selected="false">Counterexamples</button>
+        <button role="tab" id="tab-counter" aria-controls="view-counter" aria-selected="false" data-modes="base simplified">Counterexamples</button>
       </nav>
 
       <!-- Replay -->
@@ -135,7 +141,7 @@
           <div class="facts" id="compare-facts"></div>
           <div class="table-wrap"><table class="data" id="compare-table"></table></div>
           <figure class="chart-block">
-            <figcaption>Wait for each trip, ordered by request time</figcaption>
+            <figcaption id="chart-waits-caption">Wait for each trip, ordered by request time</figcaption>
             <div class="chart-box"><canvas id="chart-waits" aria-label="Wait for each trip by algorithm"></canvas></div>
           </figure>
           <div class="link-row">
@@ -155,12 +161,13 @@
           <label>Trips <input type="number" name="n" min="1" max="300" value="8"></label>
           <label>Cars <input type="number" name="cars" min="1" max="50" value="2"></label>
           <label>Grid size <input type="number" name="width" min="2" max="40" value="10"></label>
-          <label>Requests within (min) <input type="number" name="horizon" min="0" max="5000" value="40"></label>
+          <label data-modes="base simplified">Requests within (min) <input type="number" name="horizon" min="0" max="5000" value="40"></label>
+          <label data-modes="online">Load (%) <input type="number" name="load" min="10" max="300" step="1" value="85"></label>
           <label><span data-batch>Days</span><span data-sweep hidden>Days per value</span> <input type="number" name="instances" min="1" max="2000" value="50"></label>
           <label>Seed <input type="number" name="seed" value="3821"></label>
           <label>Compare against
             <select name="reference">
-              <option value="optimal">True optimum</option>
+              <option value="optimal" id="exp-ref-optimal">True optimum</option>
               <option value="best_heuristic">Best heuristic</option>
             </select>
           </label>
@@ -168,7 +175,8 @@
             <select name="variable">
               <option value="n">Trips</option>
               <option value="cars">Cars</option>
-              <option value="horizon">Requests within</option>
+              <option value="horizon" data-modes="base simplified">Requests within</option>
+              <option value="load" data-modes="online">Load (%)</option>
               <option value="width">Grid size</option>
             </select>
           </label>
@@ -178,7 +186,7 @@
             <button type="button" class="btn" id="exp-cancel" hidden>Cancel</button>
           </div>
         </form>
-        <p class="hint">Uses the enabled heuristics and the solver time limit from the sidebar. Days where the solver hits the limit are compared with the best schedule it found.</p>
+        <p class="hint" id="exp-hint">Uses the enabled heuristics and the solver time limit from the sidebar. Days where the solver hits the limit are compared with the best schedule it found.</p>
         <div class="progress" id="exp-progress" hidden><div class="bar"><span></span></div><p></p></div>
         <div id="exp-results"></div>
       </section>
@@ -196,8 +204,8 @@
           <label>Search steps <input type="number" name="iterations" min="10" max="20000" value="1500"></label>
           <label>Maximise
             <select name="objective">
-              <option value="ratio">Ratio of longest waits</option>
-              <option value="gap">Difference in longest wait</option>
+              <option value="ratio" id="ce-opt-ratio">Ratio of longest waits</option>
+              <option value="gap" id="ce-opt-gap">Difference in longest wait</option>
             </select>
           </label>
           <label>Seed <input type="number" name="seed" value="1"></label>

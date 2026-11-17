@@ -346,3 +346,17 @@ table.data.matrix td:first-child, table.data.matrix th:first-child { text-align:
 .ce-table { max-width: 520px; margin: 12px 0; }
 .maps.overlay .map-card { max-width: 820px; }
 #exp-results { margin-top: 18px; }
+
+/* ---------------------------------------------------------------- problem switch */
+.topbar .problem-switch { margin-left: auto; margin-right: 12px; }
+.problem-switch button { padding: 7px 14px; font-weight: 500; }
+@media (max-width: 760px) {
+  .topbar { flex-wrap: wrap; }
+  .topbar .problem-switch { order: 3; margin: 8px 0 0; width: 100%; }
+  .problem-switch button { flex: 1; padding: 7px 6px; }
+}
+[data-modes][hidden] { display: none !important; }
+
+/* Online days: demand hotspots drawn under the streets' traffic */
+.m-hot { fill: var(--s2); opacity: 0.12; }
+.m-hot-core { fill: none; stroke: var(--s2); stroke-dasharray: 0.25 0.2; opacity: 0.55; }

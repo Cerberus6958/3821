@@ -68,6 +68,13 @@ PRESETS = [
         "description": "Our proposed heuristic: assign the trip whose minimum wait over all cars is largest.",
     },
     {
+        "id": "epd",
+        "name": "EPD",
+        "car_formula": "wait, empty",
+        "trip_formula": "t + ride, t",
+        "description": "Earliest possible drop-off: take trips in order of t + ride; give each to the car that can pick it up soonest.",
+    },
+    {
         "id": "regret",
         "name": "Regret",
         "car_formula": "wait, empty",

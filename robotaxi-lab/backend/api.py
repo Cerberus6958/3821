@@ -15,10 +15,12 @@ from .exact import ENUMERATION_LIMIT, HAVE_ORTOOLS
 from .experiments import JobManager, compare, find_counterexample, run_batch, run_sweep
 from .expr import FUNCTIONS, FormulaError
 from .heuristics import CAR_VARIABLES, PRESETS, TRIP_VARIABLES, Heuristic
+from .hub import HAVE_MAXFLOW, HUB_EXACT_LIMIT, HUB_PRESETS, KEY_VARIABLES, ONLINE_PRESETS, DispatchRule, online_instance
 from .model import Instance, random_instance
 
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
-MAX_TRIPS = 300
+MAX_TRIPS = 500
+MODE_PATTERN = "^(base|simplified|online)$"
 app = FastAPI(title="Robotaxi dispatch lab")
 jobs = JobManager()
 
@@ -26,8 +28,14 @@ jobs = JobManager()
 class HeuristicIn(BaseModel):
     id: str = ""
     name: str = "Heuristic"
-    car_formula: str
-    trip_formula: str
+    car_formula: str = ""      # base problem
+    trip_formula: str = ""     # base problem
+    key_formula: str = ""      # simplified and online problems
+    lookahead: bool = False    # simplified problem only
+
+
+class ValidateIn(HeuristicIn):
+    mode: str = Field("base", pattern=MODE_PATTERN)
 
 
 class ExactIn(BaseModel):
@@ -37,25 +45,30 @@ class ExactIn(BaseModel):
 
 
 class RandomIn(BaseModel):
+    mode: str = Field("base", pattern=MODE_PATTERN)
     n: int = Field(10, ge=1, le=MAX_TRIPS)
     cars: int = Field(2, ge=1, le=50)
     width: int = Field(10, ge=2, le=40)
     horizon: int = Field(40, ge=0, le=5000)
+    load: float = Field(85, gt=0, le=300)          # online only: percent of fleet capacity demanded
     seed: Optional[int] = None
     min_ride: int = Field(1, ge=0, le=40)
 
 
 class CompareIn(BaseModel):
+    mode: str = Field("base", pattern=MODE_PATTERN)
     instance: dict
     heuristics: List[HeuristicIn]
     exact: ExactIn = ExactIn()
 
 
 class BatchConfig(BaseModel):
+    mode: str = Field("base", pattern=MODE_PATTERN)
     n: int = Field(8, ge=1, le=MAX_TRIPS)
     cars: int = Field(2, ge=1, le=50)
     width: int = Field(10, ge=2, le=40)
     horizon: int = Field(40, ge=0, le=5000)
+    load: float = Field(85, gt=0, le=300)
     instances: int = Field(50, ge=1, le=2000)
     seed: int = 3821
     reference: str = Field("optimal", pattern="^(optimal|best_heuristic)$")
@@ -68,7 +81,7 @@ class BatchIn(BaseModel):
 
 
 class SweepConfig(BatchConfig):
-    variable: str = Field("n", pattern="^(n|cars|horizon|width)$")
+    variable: str = Field("n", pattern="^(n|cars|horizon|width|load)$")
     values: List[int] = Field(default_factory=lambda: [4, 6, 8, 10, 12])
     instances: int = Field(10, ge=1, le=500)
 
@@ -80,6 +93,7 @@ class SweepIn(BaseModel):
 
 
 class CounterConfig(BaseModel):
+    mode: str = Field("base", pattern="^(base|simplified)$")
     n: int = Field(5, ge=2, le=7)
     cars: int = Field(2, ge=1, le=6)
     width: int = Field(10, ge=2, le=40)
@@ -95,13 +109,23 @@ class CounterIn(BaseModel):
     opponent: Optional[HeuristicIn] = None
 
 
-def _heuristics(items: List[HeuristicIn]) -> List[Heuristic]:
+def _build(h: HeuristicIn, mode: str):
+    d = h.model_dump()
+    if mode == "base":
+        return Heuristic.from_dict(d)
+    if mode == "online" and h.lookahead:
+        raise FormulaError("rules that look ahead at trips not requested yet need to know the future, "
+                           "so they can't run online. Untick 'Look ahead' or switch to the simplified problem.")
+    return DispatchRule.from_dict(d)
+
+
+def _heuristics(items: List[HeuristicIn], mode: str = "base") -> list:
     if not items:
         raise HTTPException(400, "Add at least one heuristic.")
     out = []
     for h in items:
         try:
-            out.append(Heuristic.from_dict(h.model_dump()))
+            out.append(_build(h, mode))
         except FormulaError as exc:
             raise HTTPException(400, f"{h.name}: {exc}")
     return out
@@ -128,6 +152,13 @@ def meta():
         "presets": PRESETS,
         "car_variables": CAR_VARIABLES,
         "trip_variables": TRIP_VARIABLES,
+        "modes": {
+            "base": {"presets": PRESETS, "car_variables": CAR_VARIABLES, "trip_variables": TRIP_VARIABLES},
+            "simplified": {"presets": HUB_PRESETS, "key_variables": KEY_VARIABLES},
+            "online": {"presets": ONLINE_PRESETS, "key_variables": KEY_VARIABLES},
+        },
+        "hub_exact_limit": HUB_EXACT_LIMIT,
+        "have_maxflow": HAVE_MAXFLOW,
         "functions": sorted(FUNCTIONS),
         "have_ortools": HAVE_ORTOOLS,
         "enumeration_limit": ENUMERATION_LIMIT,
@@ -136,9 +167,9 @@ def meta():
 
 
 @app.post("/api/heuristics/validate")
-def validate(h: HeuristicIn):
+def validate(h: ValidateIn):
     try:
-        Heuristic.from_dict(h.model_dump())
+        _build(h, h.mode)
     except FormulaError as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True}
@@ -147,31 +178,39 @@ def validate(h: HeuristicIn):
 @app.post("/api/instance/random")
 def make_random(body: RandomIn):
     seed = body.seed if body.seed is not None else random.randrange(1, 10**6)
-    inst = random_instance(random.Random(seed), body.n, body.cars, width=body.width, horizon=body.horizon,
-                           min_ride=body.min_ride, seed=seed)
+    if body.mode == "online":
+        inst = online_instance(random.Random(seed), body.n, body.cars, width=body.width, load=body.load / 100.0,
+                               seed=seed)
+    else:
+        inst = random_instance(random.Random(seed), body.n, body.cars, width=body.width, horizon=body.horizon,
+                               min_ride=body.min_ride, seed=seed)
     return inst.to_dict()
 
 
 @app.post("/api/compare")
 def compare_endpoint(body: CompareIn):
     inst = _instance(body.instance)
-    hs = _heuristics(body.heuristics)
+    hs = _heuristics(body.heuristics, body.mode)
     try:
-        return compare(inst, hs, body.exact.model_dump())
+        return compare(inst, hs, body.exact.model_dump(), body.mode)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(400, str(exc))
 
 
 @app.post("/api/jobs/batch")
 def start_batch(body: BatchIn):
-    hs = _heuristics(body.heuristics)
+    hs = _heuristics(body.heuristics, body.config.mode)
     cfg, exact = body.config.model_dump(), body.exact.model_dump()
     return {"job": jobs.start("batch", lambda progress, stop: run_batch(cfg, hs, exact, progress))}
 
 
 @app.post("/api/jobs/sweep")
 def start_sweep(body: SweepIn):
-    hs = _heuristics(body.heuristics)
+    hs = _heuristics(body.heuristics, body.config.mode)
+    if body.config.variable == "load" and body.config.mode != "online":
+        raise HTTPException(400, "Load can only be swept in the online problem.")
+    if body.config.variable == "horizon" and body.config.mode == "online":
+        raise HTTPException(400, "Online days set their pace by load, so sweep load instead of the request window.")
     if not body.config.values or len(body.config.values) > 25:
         raise HTTPException(400, "Give between 1 and 25 values to sweep over.")
     cfg, exact = body.config.model_dump(), body.exact.model_dump()
@@ -180,8 +219,8 @@ def start_sweep(body: SweepIn):
 
 @app.post("/api/jobs/counterexample")
 def start_counter(body: CounterIn):
-    target = _heuristics([body.target])[0]
-    opponent = _heuristics([body.opponent])[0] if body.opponent else None
+    target = _heuristics([body.target], body.config.mode)[0]
+    opponent = _heuristics([body.opponent], body.config.mode)[0] if body.opponent else None
     cfg = body.config.model_dump()
     return {"job": jobs.start("counterexample",
                               lambda progress, stop: find_counterexample(cfg, target, opponent, progress, stop))}

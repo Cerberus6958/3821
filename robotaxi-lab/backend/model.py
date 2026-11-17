@@ -48,13 +48,17 @@ class Instance:
     cars: int
     trips: List[Trip] = field(default_factory=list)
     seed: Optional[int] = None
+    # Online days only: hotspot centres, load factor and mean busy time per trip.
+    hotspots: Optional[List[List[int]]] = None
+    load: Optional[float] = None
+    mean_busy: Optional[float] = None
 
     @property
     def n(self) -> int:
         return len(self.trips)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "width": self.width,
             "height": self.height,
             "depot": list(self.depot),
@@ -62,6 +66,10 @@ class Instance:
             "seed": self.seed,
             "trips": [tr.to_dict() for tr in self.trips],
         }
+        for key in ("hotspots", "load", "mean_busy"):
+            if getattr(self, key) is not None:
+                out[key] = getattr(self, key)
+        return out
 
     @staticmethod
     def from_dict(d: dict) -> "Instance":
@@ -75,6 +83,12 @@ class Instance:
             trips.append(Trip(s=s, w=w, t=int(raw["t"])))
         inst = Instance(width=width, height=height, depot=depot,
                         cars=int(d.get("cars", 2)), trips=trips, seed=d.get("seed"))
+        if isinstance(d.get("hotspots"), list):
+            inst.hotspots = [[int(v) for v in pt][:2] for pt in d["hotspots"] if isinstance(pt, (list, tuple))]
+        if d.get("load") is not None:
+            inst.load = float(d["load"])
+        if d.get("mean_busy") is not None:
+            inst.mean_busy = float(d["mean_busy"])
         inst.validate()
         return inst
 
