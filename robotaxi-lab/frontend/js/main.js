@@ -3,10 +3,10 @@ import { api } from "./api.js";
 import { initCompare } from "./compare.js";
 import { initCounter } from "./counter.js";
 import { initExperiments } from "./experiments.js";
-import { initHeuristics } from "./heuristics.js";
-import { initInstance, setInstance } from "./instance.js";
+import { initHeuristics, loadHeuristics } from "./heuristics.js";
+import { initInstance, loadInstanceForMode, setInstance } from "./instance.js";
 import { initReplay } from "./replay.js";
-import { emit, enabledHeuristics, exactSettings, heuristicPayload, on, state } from "./state.js";
+import { MODE_INFO, emit, enabledHeuristics, exactSettings, heuristicPayload, on, state } from "./state.js";
 import { fmtSeconds, store, toast } from "./util.js";
 
 const TABS = ["replay", "compare", "experiments", "counter"];
@@ -28,8 +28,9 @@ function initTabs() {
   for (const t of TABS) document.getElementById(`tab-${t}`).addEventListener("click", () => showTab(t));
   document.querySelector(".tabs").addEventListener("keydown", (e) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-    const cur = TABS.findIndex((t) => document.getElementById(`tab-${t}`).getAttribute("aria-selected") === "true");
-    const next = TABS[(cur + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
+    const tabs = TABS.filter((t) => !document.getElementById(`tab-${t}`).hidden);
+    const cur = tabs.findIndex((t) => document.getElementById(`tab-${t}`).getAttribute("aria-selected") === "true");
+    const next = tabs[(cur + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
     showTab(next);
     document.getElementById(`tab-${next}`).focus();
   });
@@ -57,8 +58,18 @@ function solverNote() {
   const note = document.getElementById("solver-note");
   const m = state.meta;
   const n = state.instance ? state.instance.trips.length : null;
+  document.getElementById("exact-label").textContent = state.mode === "base"
+    ? "Compute the true optimum" : "Compute the optimum or a lower bound";
   if (!document.getElementById("exact-enabled").checked) {
     note.textContent = "Ratios are left blank while the optimum is switched off.";
+    return;
+  }
+  if (state.mode !== "base") {
+    const lim = m.hub_exact_limit;
+    const flow = "a max-flow lower bound (Horn, 1974): trips may pause and change cars, so it never exceeds the optimum and true ratios are at most the ones shown";
+    if (n !== null && n <= lim) note.textContent = `${n} trips: solved exactly by exhaustive search. The lab also reports ${flow.split(":")[0]}.`;
+    else if (n !== null) note.textContent = `${n} trips is too many to solve exactly (limit ${lim}), so heuristics are measured against ${flow}.`;
+    else note.textContent = `Days with up to ${lim} trips are solved exactly; bigger days use ${flow}.`;
     return;
   }
   if (!m.have_ortools) {
@@ -80,7 +91,9 @@ async function runDay() {
   status.textContent = "Dispatching…";
   const t0 = performance.now();
   try {
-    const res = await api.compare({ instance: state.instance, heuristics: hs.map(heuristicPayload), exact: exactSettings() });
+    const mode = state.mode;
+    const res = await api.compare({ mode, instance: state.instance, heuristics: hs.map(heuristicPayload), exact: exactSettings() });
+    if (mode !== state.mode) return;   // the problem was switched while this ran
     // Remember which sidebar heuristic produced each result so colours follow the heuristic.
     for (const r of res.heuristics) {
       const h = hs.find((x) => x.uid === r.id);
@@ -91,7 +104,9 @@ async function runDay() {
     const opt = res.optimal;
     status.textContent = opt
       ? `${opt.proven ? "Optimum proven" : "Best found, not proven"} in ${fmtSeconds(opt.seconds)}. Total ${fmtSeconds(secs)}.`
-      : `Done in ${fmtSeconds(secs)}.`;
+      : res.reference && res.reference.kind === "flow_bound"
+        ? `Flow lower bound ${res.reference.value} min. Done in ${fmtSeconds(secs)}.`
+        : `Done in ${fmtSeconds(secs)}.`;
     emit("result-changed");
   } catch (err) {
     status.textContent = "";
@@ -101,8 +116,41 @@ async function runDay() {
   }
 }
 
+// Show only the controls that belong to the current problem.
+function applyModeVisibility() {
+  const mode = state.mode;
+  document.documentElement.dataset.problem = mode;
+  for (const b of document.querySelectorAll("[data-problem]")) b.setAttribute("aria-checked", String(b.dataset.problem === mode));
+  for (const n of document.querySelectorAll("[data-modes]")) {
+    const ok = n.dataset.modes.split(" ").includes(mode);
+    n.hidden = !ok;
+    if (n.tagName === "OPTION") n.disabled = !ok;
+    for (const input of n.querySelectorAll("input")) input.disabled = !ok;
+  }
+  document.getElementById("tagline").textContent = MODE_INFO[mode].tagline;
+  const select = document.querySelector("#exp-form select[name=variable]");
+  if (select.selectedOptions[0] && select.selectedOptions[0].disabled) select.value = "n";
+}
+
+function setMode(mode) {
+  if (mode === state.mode || !MODE_INFO[mode]) return;
+  state.mode = mode;
+  store.set("mode", mode);
+  state.result = null;
+  applyModeVisibility();
+  loadHeuristics();
+  loadInstanceForMode();
+  document.getElementById("run-status").textContent = "";
+  emit("mode-changed", mode);
+  emit("result-changed");
+  if (mode === "online" && document.getElementById("tab-counter").getAttribute("aria-selected") === "true") showTab("replay");
+  solverNote();
+}
+
 async function boot() {
   initTheme();
+  const savedMode = store.get("mode", "base");
+  state.mode = MODE_INFO[savedMode] ? savedMode : "base";
   try {
     state.meta = await api.meta();
   } catch (err) {
@@ -116,8 +164,11 @@ async function boot() {
   initExperiments();
   initCounter();
   initInstance();
+  applyModeVisibility();
   initTabs();
+  if (state.mode === "online" && store.get("tab", "replay") === "counter") showTab("replay");
   solverNote();
+  for (const b of document.querySelectorAll("[data-problem]")) b.addEventListener("click", () => setMode(b.dataset.problem));
 
   const exactBox = document.getElementById("exact-enabled");
   const limit = document.getElementById("exact-limit");

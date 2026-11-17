@@ -22,3 +22,8 @@ To run, you can run  ```python3 taxi_sim.py``` and pass in a number of optional 
 | --trips-file | none | Load a predefined set of trips if you want |
 | --csv | none | Produce a file of the results |
 
+
+## Robotaxi lab and report experiments
+
+- `robotaxi-lab/`: interactive simulator with three problems (base, simplified, online). See `robotaxi-lab/README.md`; run with `cd robotaxi-lab && python run.py`.
+- `experiments/`: the scripts behind every table and figure in the final report. See `experiments/README.md`.

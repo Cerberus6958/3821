@@ -124,3 +124,66 @@ def test_formula_rejects_unsafe_input(bad):
 def test_formula_tuple_and_functions():
     f = compile_formula("-wait, min(wait, 3), 2 if wait > 1 else 0", {"wait"})
     assert f({"wait": 5}) == (-5.0, 3.0, 2.0)
+
+
+# ------------------------------------------------------------------ simplified and online problems
+
+from backend.hub import (HUB_PRESETS, DispatchRule, flow_lower_bound, hub_optimal, hub_simulate,
+                         online_instance, trip_parts)
+
+HUB = {p["id"]: DispatchRule.from_dict(p) for p in HUB_PRESETS}
+
+
+def naive_hub_optimum(inst: Instance) -> int:
+    """Independent brute force for the simplified problem: every assignment and every order."""
+    best = float("inf")
+    for assign in itertools.product(range(inst.cars), repeat=inst.n):
+        worst = 0
+        for c in range(inst.cars):
+            grp = [i for i in range(inst.n) if assign[i] == c]
+            gbest = float("inf")
+            for order in itertools.permutations(grp):
+                routes = [list(order)] + [[i for i in range(inst.n) if i not in order]]
+                sched = hub_simulate(Instance(inst.width, inst.height, inst.depot, 2, inst.trips), routes)
+                gbest = min(gbest, max((sched.outcomes[i].completion for i in order), default=0))
+            worst = max(worst, gbest)
+        best = min(best, worst)
+    return best
+
+
+def test_hub_optimum_matches_bruteforce():
+    rng = random.Random(11)
+    for _ in range(30):
+        inst = random_instance(rng, rng.randint(1, 5), rng.randint(1, 3), horizon=rng.choice([5, 20, 60]))
+        assert hub_optimal(inst).objective == naive_hub_optimum(inst)
+
+
+def test_dispatch_bounds_and_flow_bound():
+    """Theorem: key t + lam*a is within (5 + |lam| - 1/m) of OPT, and the flow bound never exceeds OPT."""
+    rng = random.Random(12)
+    lams = {"fifo": 0, "epd": 1, "adjmaxmin": -1}
+    for _ in range(150):
+        inst = random_instance(rng, rng.randint(1, 7), rng.randint(1, 3), horizon=rng.choice([5, 20, 60]))
+        opt = hub_optimal(inst).objective
+        assert flow_lower_bound(inst)["value"] <= opt
+        for rid, lam in lams.items():
+            assert HUB[rid].run(inst).objective <= (5 + abs(lam) - 1 / inst.cars) * opt + 1e-9
+
+
+def test_dispatch_lower_bound_example():
+    """One car: a long trip at time 0 and a short one at time 1 give every dispatch rule 2L against L + 3."""
+    L = 9
+    inst = Instance(20, 20, (0, 0), 1, [Trip((0, 0), (L, 0), 0), Trip((0, 0), (1, 0), 1)])
+    assert hub_optimal(inst).objective == L + 3
+    for rid in ("fifo", "epd", "adjmaxmin"):
+        assert HUB[rid].run(inst).objective == 2 * L
+
+
+def test_online_day_is_reproducible_and_bounded():
+    a = online_instance(random.Random(5), 80, 5, width=20, load=0.9, seed=5)
+    b = online_instance(random.Random(5), 80, 5, width=20, load=0.9, seed=5)
+    assert a.to_dict() == b.to_dict()
+    assert Instance.from_dict(a.to_dict()).hotspots == a.hotspots
+    lb = flow_lower_bound(a)["value"]
+    assert lb >= max(trip_parts(a, tr)[0] for tr in a.trips)
+    assert all(HUB[r].run(a).objective >= lb for r in ("fifo", "epd", "adjmaxmin"))

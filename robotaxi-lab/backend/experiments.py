@@ -13,8 +13,30 @@ from typing import Callable, Dict, List, Optional
 
 from .exact import ENUMERATION_LIMIT, enumerate_optimal, solve_exact
 from .heuristics import Heuristic, run_timed
+from .hub import (HUB_EXACT_LIMIT, DispatchRule, flow_lower_bound, hub_optimal, online_instance,
+                  run_rule_timed)
 from .model import Instance, Trip, lower_bound, random_instance
 from .zero_wait import zero_wait_analysis
+
+MODES = ("base", "simplified", "online")
+OBJECTIVE_LABEL = {"base": "longest wait", "simplified": "longest completion time", "online": "longest completion time"}
+
+
+def _timed(h, inst):
+    return run_rule_timed(h, inst) if isinstance(h, DispatchRule) else run_timed(h, inst)
+
+
+def _value(sched) -> int:
+    """The objective of a schedule: max wait (base) or max completion time (simplified, online)."""
+    return sched.objective if hasattr(sched, "objective") else sched.max_wait
+
+
+def make_instance(rng: random.Random, mode: str, params: dict) -> Instance:
+    if mode == "online":
+        return online_instance(rng, int(params["n"]), int(params["cars"]), width=int(params.get("width", 20)),
+                               load=float(params.get("load", 85)) / 100.0)
+    return random_instance(rng, int(params["n"]), int(params["cars"]), width=int(params.get("width", 10)),
+                           horizon=int(params["horizon"]))
 
 Progress = Callable[[int, int, str], None]
 
@@ -25,7 +47,9 @@ class Cancelled(Exception):
 
 # ------------------------------------------------------------------ single instance
 
-def compare(inst: Instance, heuristics: List[Heuristic], exact: dict) -> dict:
+def compare(inst: Instance, heuristics: list, exact: dict, mode: str = "base") -> dict:
+    if mode != "base":
+        return hub_compare(inst, heuristics, exact, mode)
     results = []
     best_heur = None
     for h in heuristics:
@@ -43,35 +67,92 @@ def compare(inst: Instance, heuristics: List[Heuristic], exact: dict) -> dict:
     ref = optimal["value"] if optimal and optimal["value"] is not None else None
     for r in results:
         mw = r["metrics"]["max_wait"]
+        r["metrics"]["objective"] = mw
         r["ratio"] = (mw / ref) if ref else (1.0 if ref == 0 and mw == 0 else None)
+    if optimal and optimal.get("schedule"):
+        optimal["schedule"]["metrics"]["objective"] = optimal["schedule"]["metrics"]["max_wait"]
+    reference = None
+    if ref is not None:
+        reference = {"kind": "optimal" if optimal["proven"] else "best_found", "value": ref}
     return {
+        "mode": "base",
+        "objective_label": OBJECTIVE_LABEL["base"],
         "instance": inst.to_dict(),
         "heuristics": results,
         "optimal": optimal,
+        "reference": reference,
         "lower_bound": lower_bound(inst),
         "zero_wait": zero_wait_analysis(inst),
     }
 
 
+def hub_compare(inst: Instance, rules: list, exact: dict, mode: str) -> dict:
+    results = []
+    best = None
+    for h in rules:
+        sched, ms = run_rule_timed(h, inst)
+        results.append({"id": h.id, "name": h.name, "ms": round(ms, 2), **sched.to_dict(inst)})
+        if best is None or sched.objective < best:
+            best = sched.objective
+    bound = flow_lower_bound(inst, best) if inst.n else {"value": 0, "seconds": 0.0, "longest_trip": 0}
+    optimal = None
+    if exact.get("enabled", True) and 0 < inst.n <= HUB_EXACT_LIMIT:
+        t0 = time.perf_counter()
+        sched = hub_optimal(inst)
+        optimal = {"value": sched.objective, "bound": sched.objective, "proven": True,
+                   "method": "exhaustive search", "seconds": round(time.perf_counter() - t0, 3),
+                   "schedule": sched.to_dict(inst)}
+    if optimal:
+        reference = {"kind": "optimal", "value": optimal["value"]}
+    elif exact.get("enabled", True) and inst.n:
+        reference = {"kind": "flow_bound", "value": bound["value"]}
+    else:
+        reference = None
+    ref = reference["value"] if reference else None
+    for r in results:
+        v = r["metrics"]["objective"]
+        r["ratio"] = (v / ref) if ref else (1.0 if ref == 0 and v == 0 else None)
+    return {
+        "mode": mode,
+        "objective_label": OBJECTIVE_LABEL[mode],
+        "instance": inst.to_dict(),
+        "heuristics": results,
+        "optimal": optimal,
+        "reference": reference,
+        "flow_bound": {"value": bound["value"], "seconds": round(bound["seconds"], 3),
+                       "longest_trip": bound["longest_trip"]},
+        "exact_limit": HUB_EXACT_LIMIT,
+    }
+
+
 # ------------------------------------------------------------------ batch
 
-def _evaluate(inst, heuristics, exact, reference):
+def _evaluate(inst, heuristics, exact, reference, mode="base"):
     values, times = [], []
     best_sched = None
     for h in heuristics:
-        sched, ms = run_timed(h, inst)
-        values.append(sched.max_wait)
+        sched, ms = _timed(h, inst)
+        values.append(_value(sched))
         times.append(ms)
-        if best_sched is None or sched.max_wait < best_sched.max_wait:
+        if best_sched is None or _value(sched) < _value(best_sched):
             best_sched = sched
     row = {"heuristics": values, "heuristic_ms": times, "opt": None, "bound": None,
-           "proven": None, "opt_seconds": None}
-    if reference == "optimal":
+           "proven": None, "opt_seconds": None, "reference_kind": "best_heuristic"}
+    if reference == "optimal" and mode != "base":
+        t0 = time.perf_counter()
+        if inst.n <= HUB_EXACT_LIMIT:
+            opt = hub_optimal(inst).objective
+            row.update(opt=opt, bound=opt, proven=True, reference_kind="optimal")
+        else:
+            lb = flow_lower_bound(inst, min(values))["value"]
+            row.update(opt=lb, bound=lb, proven=None, reference_kind="flow_bound")
+        row["opt_seconds"] = round(time.perf_counter() - t0, 3)
+    elif reference == "optimal":
         res = solve_exact(inst, time_limit=float(exact.get("time_limit", 10)), hint=best_sched,
                           workers=int(exact.get("workers", 4)))
         opt = res.value if res.value is not None else min(values)
         row.update(opt=min(opt, min(values)), bound=res.bound, proven=res.proven,
-                   opt_seconds=round(res.seconds, 3))
+                   opt_seconds=round(res.seconds, 3), reference_kind="optimal" if res.proven else "best_found")
     else:
         row.update(opt=min(values), bound=None, proven=None)
     return row
@@ -101,6 +182,7 @@ def _summarise(rows: List[dict], names: List[str]) -> dict:
     return {
         "per_heuristic": per,
         "wins": wins,
+        "flow_bound_days": sum(1 for r in rows if r.get("reference_kind") == "flow_bound"),
         "instances": len(rows),
         "proven": sum(1 for r in proven if r["proven"]),
         "mean_reference": statistics.mean(r["opt"] for r in rows) if rows else None,
@@ -108,24 +190,26 @@ def _summarise(rows: List[dict], names: List[str]) -> dict:
     }
 
 
-def run_batch(cfg: dict, heuristics: List[Heuristic], exact: dict, progress: Progress) -> dict:
+def run_batch(cfg: dict, heuristics: list, exact: dict, progress: Progress) -> dict:
     rng = random.Random(int(cfg.get("seed", 3821)))
     count = int(cfg["instances"])
     reference = cfg.get("reference", "optimal")
+    mode = cfg.get("mode", "base")
     rows = []
     for k in range(count):
         progress(k, count, f"Instance {k + 1} of {count}")
-        inst = random_instance(rng, int(cfg["n"]), int(cfg["cars"]), width=int(cfg.get("width", 10)),
-                               horizon=int(cfg["horizon"]))
-        row = _evaluate(inst, heuristics, exact, reference)
+        inst = make_instance(rng, mode, cfg)
+        row = _evaluate(inst, heuristics, exact, reference, mode)
         row["instance"] = inst.to_dict()
         rows.append(row)
     progress(count, count, "Done")
-    return {"config": cfg, "names": [h.name for h in heuristics], "rows": rows,
+    return {"config": cfg, "names": [h.name for h in heuristics], "rows": rows, "mode": mode,
+            "objective_label": OBJECTIVE_LABEL[mode],
             "summary": _summarise(rows, [h.name for h in heuristics]), "reference": reference}
 
 
-def run_sweep(cfg: dict, heuristics: List[Heuristic], exact: dict, progress: Progress) -> dict:
+def run_sweep(cfg: dict, heuristics: list, exact: dict, progress: Progress) -> dict:
+    mode = cfg.get("mode", "base")
     variable = cfg["variable"]
     values = [int(v) for v in cfg["values"]]
     per_value = int(cfg["instances"])
@@ -136,14 +220,13 @@ def run_sweep(cfg: dict, heuristics: List[Heuristic], exact: dict, progress: Pro
     done = 0
     for v in values:
         params = {"n": int(cfg["n"]), "cars": int(cfg["cars"]), "horizon": int(cfg["horizon"]),
-                  "width": int(cfg.get("width", 10))}
+                  "width": int(cfg.get("width", 10)), "load": float(cfg.get("load", 85))}
         params[variable] = v
         rows = []
         for k in range(per_value):
             progress(done, total, f"{variable} = {v}: instance {k + 1} of {per_value}")
-            inst = random_instance(rng, params["n"], params["cars"], width=params["width"],
-                                   horizon=params["horizon"])
-            rows.append(_evaluate(inst, heuristics, exact, reference))
+            inst = make_instance(rng, mode, params)
+            rows.append(_evaluate(inst, heuristics, exact, reference, mode))
             done += 1
         summ = _summarise(rows, [h.name for h in heuristics])
         secs = [r["opt_seconds"] for r in rows if r["opt_seconds"] is not None]
@@ -155,9 +238,11 @@ def run_sweep(cfg: dict, heuristics: List[Heuristic], exact: dict, progress: Pro
             "solver_mean_seconds": statistics.mean(secs) if secs else None,
             "solver_max_seconds": max(secs) if secs else None,
             "mean_reference": summ["mean_reference"],
+            "flow_bound_days": summ["flow_bound_days"],
         })
     progress(total, total, "Done")
-    return {"config": cfg, "names": [h.name for h in heuristics], "points": points, "reference": reference}
+    return {"config": cfg, "names": [h.name for h in heuristics], "points": points, "reference": reference,
+            "mode": mode, "objective_label": OBJECTIVE_LABEL[mode]}
 
 
 # ------------------------------------------------------------------ counterexamples
@@ -184,7 +269,7 @@ def _mutate(rng: random.Random, inst: Instance, horizon: int) -> Instance:
     return Instance(inst.width, inst.height, inst.depot, inst.cars, trips)
 
 
-def find_counterexample(cfg: dict, target: Heuristic, opponent: Optional[Heuristic], progress: Progress,
+def find_counterexample(cfg: dict, target, opponent, progress: Progress,
                         should_stop: Callable[[], bool]) -> dict:
     n = int(cfg["n"])
     if n > 7:
@@ -194,9 +279,14 @@ def find_counterexample(cfg: dict, target: Heuristic, opponent: Optional[Heurist
     horizon = int(cfg["horizon"])
     objective = cfg.get("objective", "ratio")
 
+    hub = cfg.get("mode", "base") != "base"
+
     def score(inst):
-        h = target.run(inst).max_wait
-        ref = opponent.run(inst).max_wait if opponent else enumerate_optimal(inst).value
+        h = _value(target.run(inst))
+        if opponent:
+            ref = _value(opponent.run(inst))
+        else:
+            ref = hub_optimal(inst).objective if hub else enumerate_optimal(inst).value
         if objective == "gap":
             return h - ref, h, ref
         return h / max(ref, 1), h, ref
@@ -227,6 +317,7 @@ def find_counterexample(cfg: dict, target: Heuristic, opponent: Optional[Heurist
         raise ValueError("The search stopped before evaluating any instance.")
     return {"score": best[0], "heuristic_value": best[1], "reference_value": best[2],
             "objective": objective, "reference": opponent.name if opponent else "Optimal",
+            "mode": cfg.get("mode", "base"), "objective_label": OBJECTIVE_LABEL[cfg.get("mode", "base")],
             "instance": best[3].to_dict()}
 
 

@@ -4,11 +4,35 @@ import { store } from "./util.js";
 const listeners = {};
 
 export const state = {
+  mode: "base",        // "base" | "simplified" | "online"
   meta: null,
-  heuristics: [],      // {uid, slot, name, car_formula, trip_formula, enabled, description}
+  heuristics: [],      // base: {uid, slot, name, car_formula, trip_formula, ...}; others: {..., key_formula, lookahead}
   instance: null,      // current day
   result: null,        // last /api/compare response
 };
+
+export const MODE_INFO = {
+  base: {
+    label: "Base problem",
+    tagline: "Compare dispatch heuristics against the optimal schedule for the longest passenger wait",
+  },
+  simplified: {
+    label: "Simplified",
+    tagline: "Cars return to the depot after every trip. Compare dispatch rules on the longest completion time (request to drop-off)",
+  },
+  online: {
+    label: "Online",
+    tagline: "Trips arrive over the day (Poisson, with demand hotspots). Dispatch rules against a max-flow lower bound",
+  },
+};
+
+export const isHub = () => state.mode !== "base";
+
+// Storage key for settings kept separately per problem (the base problem keeps the original keys).
+export const modeKey = (name) => (state.mode === "base" ? name : `${name}-${state.mode}`);
+
+// The objective being minimised, for labels: "longest wait" or "longest completion time".
+export const objLabel = () => (state.mode === "base" ? "longest wait" : "longest completion time");
 
 export function on(event, fn) {
   (listeners[event] ||= []).push(fn);
@@ -27,7 +51,7 @@ export function nextSlot() {
 }
 
 export function saveHeuristics() {
-  store.set("heuristics", state.heuristics);
+  store.set(modeKey("heuristics"), state.heuristics);
 }
 
 export function enabledHeuristics() {
@@ -35,6 +59,7 @@ export function enabledHeuristics() {
 }
 
 export function heuristicPayload(h) {
+  if (isHub()) return { id: h.uid, name: h.name, key_formula: h.key_formula, lookahead: !!h.lookahead && state.mode === "simplified" };
   return { id: h.uid, name: h.name, car_formula: h.car_formula, trip_formula: h.trip_formula };
 }
 

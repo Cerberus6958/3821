@@ -1,5 +1,5 @@
 // Replay view: animate each algorithm's cars over the day, minute by minute.
-import { on, resultSeries, state } from "./state.js";
+import { isHub, objLabel, on, resultSeries, state } from "./state.js";
 import { el, fmt, store, svg } from "./util.js";
 import { ratioText } from "./compare.js";
 
@@ -255,6 +255,16 @@ function buildMap(inst, list, overlay) {
     svg("rect", { class: "m-depot", x: -0.32, y: -0.32, width: 0.64, height: 0.64, rx: 0.08 }),
     svg("text", { class: "m-depot-text", x: 0, y: 0.02, text: "D" })));
 
+  if (Array.isArray(inst.hotspots)) {
+    const r = Math.max(1, W / 10) * 1.6;
+    for (const [hx, hy] of inst.hotspots) {
+      root.append(svg("g", {},
+        svg("title", { text: `Demand hotspot near (${hx}, ${hy}): 70% of pickups and drop-offs are drawn around the hotspots` }),
+        svg("circle", { class: "m-hot", cx: X(hx), cy: Y(hy), r }),
+        svg("circle", { class: "m-hot-core", cx: X(hx), cy: Y(hy), r, "stroke-width": 0.06 * k })));
+    }
+  }
+
   const routeLayer = svg("g", {});
   const destLayer = svg("g", {});
   const pinLayer = svg("g", {});
@@ -310,8 +320,9 @@ function buildMap(inst, list, overlay) {
     head.append(...[
       el("span", { class: "swatch", style: { background: colorVar(s.slot) } }),
       el("h3", {}, s.name),
-      el("span", { class: "map-stat" }, "final longest wait", el("b", {}, `${fmt(s.sched.metrics.max_wait)}`), "min"),
-      s.isOpt ? null : el("span", { class: "map-stat" }, "ratio", el("b", {}, ratioText(s.ratio, state.result.optimal, s.sched.metrics.max_wait))),
+      el("span", { class: "map-stat" }, `final ${objLabel()}`, el("b", {}, `${fmt(s.sched.metrics.objective ?? s.sched.metrics.max_wait)}`), "min"),
+      s.isOpt ? null : el("span", { class: "map-stat" }, "ratio",
+        el("b", {}, ratioText(s.ratio, state.result.reference, s.sched.metrics.objective ?? s.sched.metrics.max_wait))),
     ].filter(Boolean));
   }
   const live = el("div", { class: "map-live" },
@@ -377,7 +388,8 @@ function draw() {
       const x = v.X(px) + car.off[0], y = v.Y(py) + car.off[1];
       car.g.setAttribute("transform", `translate(${x} ${y}) scale(${v.k})`);
       const what = st.kind === "ride" ? `carrying trip ${st.leg.trip}` : st.kind === "empty" ? `driving empty to trip ${st.leg.trip}`
-        : st.kind === "idle" ? `waiting at the pickup for trip ${st.leg.trip}` : "parked";
+        : st.kind === "idle" ? `waiting at the pickup for trip ${st.leg.trip}`
+          : st.kind === "return" ? `driving back to the depot after trip ${st.leg.trip}` : "parked";
       car.title.textContent = `${car.s.name}, car ${car.c + 1}: ${what}`;
       if (st.kind === "ride") {
         const tr = inst.trips[st.leg.trip];
@@ -388,7 +400,7 @@ function draw() {
         const pts = remainingPath(st.leg.from, st.leg.to, st.k).map(([a, b]) => `${v.X(a) + car.off[0]},${v.Y(b) + car.off[1]}`).join(" ");
         car.route.setAttribute("points", pts);
         car.route.setAttribute("display", "inline");
-        car.route.classList.toggle("is-empty", st.kind === "empty");
+        car.route.classList.toggle("is-empty", st.kind === "empty" || st.kind === "return");
       } else car.route.setAttribute("display", "none");
     }
   }
@@ -414,6 +426,7 @@ function drawStatusTable(T) {
   const chip = (st) => {
     if (st.kind === "waiting") return el("span", { class: "chip waiting" }, `Waiting, ${fmt(Math.floor(st.waited + 1e-9))} min so far`);
     if (st.kind === "riding") return el("span", { class: "chip riding" }, `In car ${st.o.car + 1}`);
+    if (isHub()) return el("span", { class: "chip done" }, `Done, waited ${fmt(st.o.wait)} min, completed in ${fmt(st.o.completion)} min`);
     return el("span", { class: "chip done" }, `Done, waited ${fmt(st.o.wait)} min`);
   };
   const rows = order.map(({ t, i }) => el("tr", {},

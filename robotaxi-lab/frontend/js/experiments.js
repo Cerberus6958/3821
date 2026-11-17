@@ -1,19 +1,44 @@
 // Experiments view: many random days, or a sweep over one parameter.
 import { api, waitForJob } from "./api.js";
 import { chart, lineSet } from "./charts.js";
-import { emit, enabledHeuristics, exactSettings, heuristicPayload, on } from "./state.js";
+import { emit, enabledHeuristics, exactSettings, heuristicPayload, isHub, modeKey, objLabel, on, state } from "./state.js";
 import { download, el, fmt, fmtSeconds, formData, intOr, seriesColor, store, toCSV, toast } from "./util.js";
 
 let mode = "batch";
 let jobId = null;
 let last = null;          // { mode, result, slots }
 
-const VAR_LABEL = { n: "Trips", cars: "Cars", horizon: "Requests within (min)", width: "Grid size" };
+const VAR_LABEL = { n: "Trips", cars: "Cars", horizon: "Requests within (min)", width: "Grid size", load: "Load (%)" };
+
+const EXP_DEFAULTS = {
+  base: { n: 8, cars: 2, width: 10, horizon: 40, load: 85, instances: 50, seed: 3821, values: "4, 6, 8, 10, 12, 14" },
+  simplified: { n: 8, cars: 2, width: 10, horizon: 40, load: 85, instances: 50, seed: 3821, values: "4, 5, 6, 7, 8, 9" },
+  online: { n: 150, cars: 8, width: 20, horizon: 40, load: 85, instances: 30, seed: 3821, values: "70, 85, 95, 105" },
+};
+
+const HINTS = {
+  base: "Uses the enabled heuristics and the solver time limit from the sidebar. Days where the solver hits the limit are compared with the best schedule it found.",
+  simplified: "Uses the enabled rules from the sidebar. Days with up to 9 trips are solved exactly; bigger days are compared with the max-flow lower bound, so their ratios are upper bounds on the true ratios.",
+  online: "Each day has Poisson arrivals around demand hotspots. Big days are compared with the max-flow lower bound, so the ratios shown are upper bounds on the true ratios.",
+};
+
+function restoreForm() {
+  const form = document.getElementById("exp-form");
+  const values = { ...EXP_DEFAULTS[state.mode], ...(store.get(modeKey("exp-form"), null) || {}) };
+  for (const [k, v] of Object.entries(values)) {
+    const field = form.elements[k];
+    if (!field) continue;
+    if (field.tagName === "SELECT" && ![...field.options].some((o) => o.value === String(v) && !o.disabled)) continue;
+    field.value = v;
+  }
+  document.getElementById("exp-hint").textContent = HINTS[state.mode];
+  document.getElementById("exp-ref-optimal").textContent = isHub() ? "Optimum, or flow bound for big days" : "True optimum";
+}
 
 export function initExperiments() {
   const form = document.getElementById("exp-form");
-  const saved = store.get("exp-form", null);
-  if (saved) for (const [k, v] of Object.entries(saved)) if (form.elements[k]) form.elements[k].value = v;
+  restoreForm();
+  on("mode-changed", () => { restoreForm(); last = null; document.getElementById("exp-results").replaceChildren(); });
   setMode(store.get("exp-mode", "batch"));
   for (const b of document.querySelectorAll("#view-experiments [data-mode]")) b.addEventListener("click", () => setMode(b.dataset.mode));
   form.addEventListener("submit", (e) => { e.preventDefault(); run(); });
@@ -42,10 +67,10 @@ async function run() {
   if (!hs.length) return toast("Tick at least one heuristic in the sidebar.", "error");
   const form = document.getElementById("exp-form");
   const f = formData(form);
-  store.set("exp-form", f);
+  store.set(modeKey("exp-form"), f);
   const config = {
-    n: intOr(f.n, 8), cars: intOr(f.cars, 2), width: intOr(f.width, 10), horizon: intOr(f.horizon, 40),
-    instances: intOr(f.instances, 50), seed: intOr(f.seed, 3821), reference: f.reference,
+    mode: state.mode, n: intOr(f.n, 8), cars: intOr(f.cars, 2), width: intOr(f.width, 10), horizon: intOr(f.horizon, 40),
+    load: Number(f.load) || 85, instances: intOr(f.instances, 50), seed: intOr(f.seed, 3821), reference: f.reference,
   };
   if (mode === "sweep") {
     config.variable = f.variable;
@@ -99,19 +124,30 @@ function renderResult() {
 
 // ------------------------------------------------------------------ batch
 
+// Name of what heuristics were compared with: the optimum, the flow bound, or a mix of both.
+function referenceName(res, flowDays, total) {
+  if (res.reference !== "optimal") return "best heuristic";
+  if (!flowDays) return "optimum";
+  return flowDays === total ? "flow lower bound" : "optimum or flow bound";
+}
+
 function renderBatch(res, slots) {
   const s = res.summary;
-  const refName = res.reference === "optimal" ? "optimum" : "best heuristic";
+  const label = res.objective_label || "longest wait";
+  const hub = res.mode && res.mode !== "base";
+  const refName = referenceName(res, s.flow_bound_days || 0, s.instances);
   const out = document.getElementById("exp-results");
   const facts = el("div", { class: "facts" },
     fact(String(s.instances), `Random days${res.cancelled ? " (stopped early)" : ""}`),
-    res.reference === "optimal" ? fact(`${s.proven} of ${s.instances}`, "Optimum proven within the time limit") : null,
-    fact(`${fmt(s.mean_reference)} min`, `Mean ${refName} longest wait`),
+    res.reference === "optimal" && s.flow_bound_days !== s.instances
+      ? fact(`${s.proven} of ${s.instances}`, hub ? "Days solved exactly" : "Optimum proven within the time limit") : null,
+    s.flow_bound_days ? fact(`${s.flow_bound_days} of ${s.instances}`, "Days measured against the flow lower bound (ratios there are upper bounds)") : null,
+    fact(`${fmt(s.mean_reference)} min`, `Mean ${refName} ${label}`),
     s.mean_solver_seconds !== null ? fact(fmtSeconds(s.mean_solver_seconds), "Mean solver time per day") : null);
 
   const table = el("table", { class: "data" },
-    el("thead", {}, el("tr", {}, ["Heuristic", "Mean longest wait", "Mean ratio", "Median ratio", "Worst ratio",
-      `Days matching ${refName}`, "Zero-wait days found", "Mean run time"].map((c) => el("th", {}, c)))),
+    el("thead", {}, el("tr", {}, ["Heuristic", `Mean ${label}`, "Mean ratio", "Median ratio", "Worst ratio",
+      `Days matching ${refName}`, hub ? null : "Zero-wait days found", "Mean run time"].filter(Boolean).map((c) => el("th", {}, c)))),
     el("tbody", {}, s.per_heuristic.map((p, h) => el("tr", {},
       el("td", {}, nameCell(p.name, slots[h])),
       el("td", {}, `${fmt(p.mean_max_wait)} min`),
@@ -119,7 +155,7 @@ function renderBatch(res, slots) {
       el("td", {}, p.median_ratio === null ? "–" : `${p.median_ratio.toFixed(3)}×`),
       el("td", {}, p.worst_ratio === null ? "–" : `${p.worst_ratio.toFixed(2)}×`),
       el("td", {}, `${fmt(p.pct_matching_reference, 1)}%`),
-      el("td", {}, p.zero_reference_cases ? `${p.zero_found} of ${p.zero_reference_cases}` : "none possible"),
+      hub ? null : el("td", {}, p.zero_reference_cases ? `${p.zero_found} of ${p.zero_reference_cases}` : "none possible"),
       el("td", {}, `${fmt(p.mean_ms, 2)} ms`)))));
 
   const names = s.per_heuristic.map((p) => p.name);
@@ -138,14 +174,14 @@ function renderBatch(res, slots) {
     const row = res.rows[bestIdx];
     return el("div", { class: "worst-day" },
       nameCell(p.name, slots[h]),
-      el("span", {}, row ? `longest wait ${row.heuristics[h]} min against ${row.opt} min` : ""),
+      el("span", {}, row ? `${label} ${row.heuristics[h]} min against ${row.opt} min` : ""),
       row ? el("button", { type: "button", class: "text-btn", onclick: () => openInReplay(row.instance) }, "Open this day in the replay") : null);
   }));
 
   out.replaceChildren(
     facts,
     section("Summary", el("div", { class: "table-wrap card" }, table),
-      el("p", { class: "note" }, `Ratio is the heuristic's longest wait divided by the ${refName}'s, over days where the ${refName} is above zero.`)),
+      el("p", { class: "note" }, `Ratio is the heuristic's ${label} divided by the ${refName}, over days where the ${refName} is above zero.`)),
     figure(`Ratio on every day, sorted from worst to best`, "chart-batch-profile",
       "A flat line at 1 means the heuristic always matched. The further a line sits above 1, the more often it fell short."),
     section("Head to head", el("div", { class: "table-wrap card" }, matrix)),
@@ -181,8 +217,8 @@ function openInReplay(instance) {
 }
 
 function exportBatch(res) {
-  const rows = [["day", "reference", "proven", ...res.names, "trips_json"]];
-  res.rows.forEach((r, k) => rows.push([k + 1, r.opt, r.proven ?? "", ...r.heuristics, JSON.stringify(r.instance.trips)]));
+  const rows = [["day", "reference", "reference_kind", "proven", ...res.names, "trips_json"]];
+  res.rows.forEach((r, k) => rows.push([k + 1, r.opt, r.reference_kind ?? "", r.proven ?? "", ...r.heuristics, JSON.stringify(r.instance.trips)]));
   download("robotaxi-batch.csv", toCSV(rows), "text/csv");
 }
 
@@ -191,7 +227,9 @@ function exportBatch(res) {
 function renderSweep(res, slots) {
   const v = res.config.variable;
   const label = VAR_LABEL[v] || v;
-  const refName = res.reference === "optimal" ? "optimum" : "best heuristic";
+  const objName = res.objective_label || "longest wait";
+  const flowDays = res.points.reduce((a, p) => a + (p.flow_bound_days || 0), 0);
+  const refName = referenceName(res, flowDays, res.points.reduce((a, p) => a + p.instances, 0));
   const pts = res.points;
   const names = res.names;
   const hasSolver = pts.some((p) => p.solver_mean_seconds !== null);
@@ -210,9 +248,11 @@ function renderSweep(res, slots) {
   out.replaceChildren(
     el("div", { class: "chart-grid" },
       figure(`Mean ratio to the ${refName} as ${label.toLowerCase()} changes`, "chart-sweep-ratio"),
-      figure(`Mean longest wait as ${label.toLowerCase()} changes`, "chart-sweep-wait")),
-    hasSolver ? figure("Time to solve exactly", "chart-sweep-solver",
-      "Log scale. Exhaustive search handles up to 7 trips; beyond that CP-SAT runs until it proves the optimum or hits the time limit, so a flat top means the limit is binding.") : null,
+      figure(`Mean ${objName} as ${label.toLowerCase()} changes`, "chart-sweep-wait")),
+    hasSolver ? figure(res.mode && res.mode !== "base" ? "Time to compute the reference" : "Time to solve exactly", "chart-sweep-solver",
+      res.mode && res.mode !== "base"
+        ? "Log scale. Exhaustive search for days up to 9 trips; bigger days use the max-flow lower bound, which takes polynomial time."
+        : "Log scale. Exhaustive search handles up to 7 trips; beyond that CP-SAT runs until it proves the optimum or hits the time limit, so a flat top means the limit is binding.") : null,
     section("Results", el("div", { class: "table-wrap card" }, table)),
     el("div", { class: "link-row" }, el("button", { type: "button", class: "text-btn", onclick: () => exportSweep(res) }, "Download sweep (CSV)")),
   );
