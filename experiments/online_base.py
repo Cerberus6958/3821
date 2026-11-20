@@ -36,7 +36,7 @@ def pool(trips, m, choose):
 def run(trips, m):
     T = trips
     return {
-        "FIFO (commit)": commit_fifo(T, m),
+        "Adapted FIFO": commit_fifo(T, m),
         "FIFO": pool(T, m, lambda W, e, now: min(W, key=lambda i: (T[i][2], i))),
         "EPD": pool(T, m, lambda W, e, now: min(W, key=lambda i: (T[i][2] + d(T[i][0], T[i][1]), T[i][2], i))),
         "Max-min": pool(T, m, lambda W, e, now: max(W, key=lambda i: (now + e(i) - T[i][2], -T[i][2], -i))),
@@ -56,7 +56,7 @@ if __name__ == "__main__":
             res = run(T, m)
             for k, w in res.items():
                 mx.setdefault(k, []).append(max(w)); mean.setdefault(k, []).append(statistics.mean(w))
-            # longest request-to-drop-off time under FIFO (commit), to compare with the simplified problem
-            comp.append(max(w + d(s, e) for w, (s, e, t) in zip(res["FIFO (commit)"], T)))
+            # longest request-to-drop-off time under Adapted FIFO, to compare with the simplified problem
+            comp.append(max(w + d(s, e) for w, (s, e, t) in zip(res["Adapted FIFO"], T)))
         print(f"rho={rho} | " + " | ".join(f"{k}: max {statistics.mean(mx[k]):.1f} mean {statistics.mean(mean[k]):.1f}" for k in mx)
-              + f" | FIFO (commit) longest completion {statistics.mean(comp):.1f}", flush=True)
+              + f" | Adapted FIFO longest completion {statistics.mean(comp):.1f}", flush=True)
