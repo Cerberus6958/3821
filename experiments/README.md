@@ -4,7 +4,7 @@ Standalone Python scripts that produce every table and figure in the report. Eac
 
 ```bash
 cd experiments
-pip install numpy scipy        # only flow_lb.py and online_lb.py need these
+pip install numpy scipy        # only flow_lb.py and online_exp.py need these
 python3 base_exp.py
 ```
 
@@ -12,10 +12,10 @@ python3 base_exp.py
 |---|---|---|
 | `base_exp.py` | Base problem: FIFO, Max-min, EPD and batch matching against the exact optimum, plus zero-wait counts (150 days per setting, n = 8) | Table 1, Section 5.4 |
 | `hub_exp.py` | Simplified problem: FIFO, EPD, adjusted Max-min, shortest trip first and the original Max-min against the exact optimum | Table 3 |
-| `sweep.py` | Dispatch rules with key `t + λ·a` for λ from −2 to 2 | Figure 2, Appendix D |
+| `sweep.py` | Dispatch rules with key `t + λ·a` for λ from −2 to 2 | Figure 2, Appendix E |
 | `verify_bounds.py` | Checks the dispatch-rule bound against the exact optimum on 7,000 random days | Section 6.2 |
 | `online_exp.py` | Simplified problem online: Poisson arrivals around √d random hotspots, 400 trips, 10 cars, 200 days per load, with the flow bound and each rule's ratio to it | Table 4 |
-| `online_base.py` | Base problem online on the same days: Commit and the pool rules (FIFO, EPD, Max-min, Nearest) | Table 5 |
+| `online_base.py` | Base problem online on the same days: Adapted FIFO, FIFO, EPD, Max-min and Nearest | Table 5 |
 | `flow_lb.py` | The max-flow lower bound (Horn, 1974), and its check against the exact optimum on 900 days | Section 7.1, Appendix C |
 | `robotaxi_sim.py` | Base-problem model and exact solver used by `base_exp.py` | |
 | `online_exp_days.py` | The day generator shared by `online_exp.py` and `online_base.py` | |
