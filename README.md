@@ -1,13 +1,8 @@
 # 3821
 
-Github repo for COMP3821 Project
-
-(Mostly claude generated sim as the focus of the project is not on the simulation)
-
-  
+Github repo for COMP3821 Project  
 
 To run, you can run  ```python3 taxi_sim.py``` and pass in a number of optional arguments, as per the table below.
-
 
 | Optional Arg | Default Value | What it does |
 | -------- | -------- | -------- |
